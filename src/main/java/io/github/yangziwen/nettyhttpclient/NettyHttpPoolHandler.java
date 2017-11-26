@@ -1,6 +1,7 @@
 package io.github.yangziwen.nettyhttpclient;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.commons.lang3.builder.ToStringStyle;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
@@ -10,6 +11,7 @@ import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.util.AttributeKey;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.Promise;
@@ -35,16 +37,26 @@ public class NettyHttpPoolHandler extends AbstractChannelPoolHandler {
 						HttpResponse resp = (HttpResponse) msg;
 						Response response = new Response(resp.status().code());
 						channel.attr(HTTP_RESPONSE_KEY).set(response);
+						return;
 					}
 					if (msg instanceof HttpContent) {
 						HttpContent content = (HttpContent) msg;
 						Response response = channel.attr(HTTP_RESPONSE_KEY).get();
-						response.setContent(content.content().toString(CharsetUtil.UTF_8));
+						response.appendContent(content.content().toString(CharsetUtil.UTF_8));
+					}
+					if (msg instanceof LastHttpContent) {
+						Response response = channel.attr(HTTP_RESPONSE_KEY).get();
+						client.releaseChannel(channel);
 						Promise<Response> promise = channel.attr(client.RESPONSE_PROMISE_KEY).get();
 						promise.trySuccess(response);
-						client.releaseChannel(channel);
 					}
 				}
+				public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
+			            throws Exception {
+					client.releaseChannel(channel);
+					Promise<Response> promise = channel.attr(client.RESPONSE_PROMISE_KEY).get();
+					promise.tryFailure(cause);
+			    }
 			});
 	}
 	
@@ -53,7 +65,7 @@ public class NettyHttpPoolHandler extends AbstractChannelPoolHandler {
 		
 		private int code;
 		
-		private String content;
+		private StringBuilder contentBuffer = new StringBuilder();
 		
 		public Response(int code) {
 			this.code = code;
@@ -68,15 +80,16 @@ public class NettyHttpPoolHandler extends AbstractChannelPoolHandler {
 		}
 
 		public String getContent() {
-			return content;
+			return contentBuffer.toString();
 		}
 
-		public void setContent(String content) {
-			this.content = content;
+		public Response appendContent(String content) {
+			contentBuffer.append(content);
+			return this;
 		}
 		
 		public String toString() {
-			return ToStringBuilder.reflectionToString(this);
+			return ToStringBuilder.reflectionToString(this, ToStringStyle.SIMPLE_STYLE);
 		}
 		
 	}

@@ -2,6 +2,7 @@ package io.github.yangziwen.nettyhttpclient;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
@@ -12,7 +13,6 @@ import org.slf4j.LoggerFactory;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
-import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.pool.AbstractChannelPoolMap;
 import io.netty.channel.pool.FixedChannelPool;
@@ -37,16 +37,14 @@ public class NettyPooledClient<R> implements AutoCloseable {
 	
 	AttributeKey<Promise<R>> RESPONSE_PROMISE_KEY = AttributeKey.valueOf("response_promise");
 	
-	private EventLoopGroup group = new NioEventLoopGroup();
-	
-	private Bootstrap bootstrap = new Bootstrap();
+	private Bootstrap bootstrap = new Bootstrap().group(new NioEventLoopGroup());
 	
 	private AbstractChannelPoolMap<InetSocketAddress, FixedChannelPool> channelPoolMap;
 	
 	private ConcurrentHashMap<Channel, InetSocketAddress> channelAddressMapping = new ConcurrentHashMap<>();
 	
 	public NettyPooledClient(int poolSizePerAddress, ChannelPoolHandlerFactory<R> handlerFactory) {
-		bootstrap.group(group).channel(NioSocketChannel.class)
+		bootstrap.channel(NioSocketChannel.class)
 			.option(ChannelOption.TCP_NODELAY, true)
 			.option(ChannelOption.SO_KEEPALIVE, true);
 		channelPoolMap = new AbstractChannelPoolMap<InetSocketAddress, FixedChannelPool>() {
@@ -68,9 +66,13 @@ public class NettyPooledClient<R> implements AutoCloseable {
 		return channelPoolMap.get(address).release(channel);
 	}
 	
+	public Promise<R> sendGet(URI uri) {
+		return sendGet(uri, Collections.emptyMap());
+	}
+
 	public Promise<R> sendGet(URI uri, Map<String, Object> params) {
 		InetSocketAddress address = new InetSocketAddress(uri.getHost(), uri.getPort());
-		Promise<R> promise = group.next().newPromise();
+		Promise<R> promise = bootstrap.config().group().next().newPromise();
 		Future<Channel> future = acquireChannel(address);
 		future.addListener(new FutureListener<Channel>() {
 			@Override
@@ -96,7 +98,7 @@ public class NettyPooledClient<R> implements AutoCloseable {
 	
 	public Promise<R> sendPost(URI uri, Map<String, Object> params) {
 		InetSocketAddress address = new InetSocketAddress(uri.getHost(), uri.getPort());
-		Promise<R> promise = group.next().newPromise();
+		Promise<R> promise = bootstrap.config().group().next().newPromise();
 		Future<Channel> future = acquireChannel(address);
 		future.addListener(new FutureListener<Channel>() {
 			@Override
@@ -138,10 +140,7 @@ public class NettyPooledClient<R> implements AutoCloseable {
 
 	@Override
 	public void close() throws Exception {
-		for (Entry<InetSocketAddress, FixedChannelPool> entry : channelPoolMap) {
-			entry.getValue().close();
-		}
-		group.shutdownGracefully().sync();
+		bootstrap.config().group().shutdownGracefully().sync();
 	}
 	
 	public int getTotalPoolCnt() {
