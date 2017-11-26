@@ -1,16 +1,18 @@
 package io.github.yangziwen.nettyhttpclient;
 
 import java.net.URI;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import io.github.yangziwen.nettyhttpclient.NettyHttpPoolHandler.Response;
+import io.github.yangziwen.nettyhttpclient.NettyPooledHttpClient.Response;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 
 public class Test {
 	
 	public static void main(String[] args) throws Exception {
-		NettyPooledClient<Response> client = new NettyPooledClient<>(5, NettyHttpPoolHandler::new);
-		URI uri = new URI("http://localhost:8070/stats/errors1.json?startDate=2017-06-02&endDate=2017-06-10");
+		NettyPooledHttpClient client = new NettyPooledHttpClient(5);
+		URI uri = new URI("http://localhost:8070/stats/errors.json?startDate=2017-06-02&endDate=2017-06-10");
+		AtomicInteger cnt = new AtomicInteger();
 		for (int i = 0; i < 100; i++) {
 			final int index = i;
 			client.sendGet(uri).addListener(new FutureListener<Response>() {
@@ -21,10 +23,12 @@ public class Test {
 					} else {
 						System.out.println(index + ":" + future.cause());
 					}
+					cnt.incrementAndGet();
 				}
 			});
 		}
-		Thread.sleep(10000);
+		Thread.sleep(5000);
+		System.out.println(cnt);
 		client.close();
 		
 	}
