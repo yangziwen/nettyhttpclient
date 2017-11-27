@@ -1,6 +1,9 @@
 package io.github.yangziwen.nettyhttpclient;
 
+import java.net.InetSocketAddress;
 import java.net.URI;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.yangziwen.nettyhttpclient.NettyPooledHttpClient.Response;
@@ -10,10 +13,14 @@ import io.netty.util.concurrent.FutureListener;
 public class Test {
 	
 	public static void main(String[] args) throws Exception {
-		NettyPooledHttpClient client = new NettyPooledHttpClient(5);
+		NettyPooledHttpClient client = new NettyPooledHttpClient(20, 8);
 		URI uri = new URI("http://localhost:8070/stats/errors.json?startDate=2017-06-02&endDate=2017-06-10");
+//		URI uri = new URI("http://localhost:8045/job/codeline/metrics");
 		AtomicInteger cnt = new AtomicInteger();
-		for (int i = 0; i < 100; i++) {
+		long t = System.currentTimeMillis();
+		int n = 500;
+		CountDownLatch latch = new CountDownLatch(n);
+		for (int i = 0; i < n; i++) {
 			final int index = i;
 			client.sendGet(uri).addListener(new FutureListener<Response>() {
 				@Override
@@ -24,12 +31,15 @@ public class Test {
 						System.out.println(index + ":" + future.cause());
 					}
 					cnt.incrementAndGet();
+					latch.countDown();
 				}
 			});
 		}
-		Thread.sleep(5000);
+		latch.await(10, TimeUnit.SECONDS);
+		System.out.println(System.currentTimeMillis() - t);
 		System.out.println(cnt);
 		client.close();
+		System.out.println(client.getReleasedChannelCount(new InetSocketAddress("localhost", 8070)));
 		
 	}
 

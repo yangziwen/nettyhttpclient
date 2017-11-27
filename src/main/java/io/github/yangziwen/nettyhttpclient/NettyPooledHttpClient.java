@@ -18,6 +18,7 @@ import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
@@ -34,12 +35,16 @@ import io.netty.util.concurrent.Promise;
 
 public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 	
-	public static final AttributeKey<Promise<Response>> RESPONSE_PROMISE_KEY = AttributeKey.valueOf("response_promise");
+	private static final AttributeKey<Promise<Response>> RESPONSE_PROMISE_KEY = AttributeKey.valueOf("response_promise");
 	
 	private static final AttributeKey<Response> HTTP_RESPONSE_KEY = AttributeKey.valueOf("http_response");
-
+	
 	public NettyPooledHttpClient(int poolSizePerAddress) {
-		super(poolSizePerAddress, NettyHttpPoolHandler::new);
+		this(poolSizePerAddress, 0);
+	}
+
+	public NettyPooledHttpClient(int poolSizePerAddress, int nThreads) {
+		super(poolSizePerAddress, NettyHttpPoolHandler::new, nThreads);
 	}
 	
 	public Promise<Response> sendGet(URI uri) {
@@ -59,13 +64,13 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 					return;
 				}
 				Channel channel = future.get();
+				channel.attr(RESPONSE_PROMISE_KEY).set(promise);
 				QueryStringEncoder encoder = new QueryStringEncoder(String.valueOf(uri));
 				for (Entry<String, Object> entry : params.entrySet()) {
 					encoder.addParam(entry.getKey(), String.valueOf(entry.getValue()));
 				}
 				HttpRequest request = createHttpRequest(new URI(encoder.toString()), HttpMethod.GET);
 				channel.writeAndFlush(request);
-				setResponsePromise(channel, promise);
 			}
 		});
 		return promise;
@@ -84,13 +89,13 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 					return;
 				}
 				Channel channel = future.get();
+				channel.attr(RESPONSE_PROMISE_KEY).set(promise);;
 				HttpRequest request = createHttpRequest(uri, HttpMethod.POST);
 				HttpPostRequestEncoder encoder = new HttpPostRequestEncoder(request, false);
 				for (Entry<String, Object> entry : params.entrySet()) {
 					encoder.addBodyAttribute(entry.getKey(), String.valueOf(entry.getValue()));
 				}
 				channel.writeAndFlush(encoder.finalizeRequest());
-				setResponsePromise(channel, promise);
 			}
 		});
 		return promise;
@@ -99,13 +104,10 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 	private HttpRequest createHttpRequest(URI uri, HttpMethod method) {
 		HttpRequest request = new DefaultFullHttpRequest(
                 HttpVersion.HTTP_1_1, method, uri.getRawPath());
-		request.headers().set(HttpHeaderNames.HOST, uri.getHost());
+		request.headers()
+				.set(HttpHeaderNames.HOST, uri.getHost())
+				.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
 		return request;
-	}
-	
-	private Channel setResponsePromise(Channel channel, Promise<Response> promise) {
-		channel.attr(RESPONSE_PROMISE_KEY).set(promise);
-		return channel;
 	}
 	
 	public static class NettyHttpPoolHandler extends AbstractChannelPoolHandler {
@@ -115,7 +117,7 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 		public NettyHttpPoolHandler(NettyPooledClient<Response> client) {
 			this.client = client;
 		}
-
+		
 		@Override
 		public void channelCreated(Channel channel) throws Exception {
 			channel.pipeline()
@@ -136,14 +138,14 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 						}
 						if (msg instanceof LastHttpContent) {
 							Response response = channel.attr(HTTP_RESPONSE_KEY).get();
+							Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).getAndSet(null);
 							client.releaseChannel(channel);
-							Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).get();
 							promise.trySuccess(response);
 						}
 					}
 					public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
 				            throws Exception {
-						Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).get();
+						Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).getAndSet(null);
 						client.releaseChannel(channel);
 						promise.tryFailure(cause);
 				    }
