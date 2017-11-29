@@ -13,9 +13,8 @@ import io.netty.util.concurrent.FutureListener;
 public class Test {
 	
 	public static void main(String[] args) throws Exception {
-		NettyPooledHttpClient client = new NettyPooledHttpClient(20, 8);
-		URI uri = new URI("http://localhost:8070/stats/errors.json?startDate=2017-06-02&endDate=2017-06-10");
-//		URI uri = new URI("http://localhost:8045/job/codeline/metrics");
+		NettyPooledHttpClient client = new NettyPooledHttpClient(20, 5, 1, TimeUnit.SECONDS);
+		URI uri = new URI("http://localhost:8045/job/codeline/metrics");
 		AtomicInteger cnt = new AtomicInteger();
 		long t = System.currentTimeMillis();
 		int n = 500;
@@ -35,11 +34,12 @@ public class Test {
 				}
 			});
 		}
-		latch.await(10, TimeUnit.SECONDS);
+		latch.await(30, TimeUnit.SECONDS);
 		System.out.println(System.currentTimeMillis() - t);
 		System.out.println(cnt);
+		Thread.sleep(3000);
+		System.out.println(client.getReleasedChannelCount(new InetSocketAddress("localhost", 8045)));
 		client.close();
-		System.out.println(client.getReleasedChannelCount(new InetSocketAddress("localhost", 8070)));
 		
 	}
 

@@ -5,12 +5,15 @@ import java.net.URI;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 
 import io.github.yangziwen.nettyhttpclient.NettyPooledHttpClient.Response;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.pool.AbstractChannelPoolHandler;
@@ -32,6 +35,7 @@ import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.ScheduledFuture;
 
 public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 	
@@ -40,11 +44,26 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 	private static final AttributeKey<Response> HTTP_RESPONSE_KEY = AttributeKey.valueOf("http_response");
 	
 	public NettyPooledHttpClient(int poolSizePerAddress) {
-		this(poolSizePerAddress, 0);
+		this(poolSizePerAddress, 0, 0, TimeUnit.SECONDS);
 	}
 
-	public NettyPooledHttpClient(int poolSizePerAddress, int nThreads) {
-		super(poolSizePerAddress, NettyHttpPoolHandler::new, nThreads);
+	public NettyPooledHttpClient(int poolSizePerAddress, int nThreads, long timeout, TimeUnit timeoutUnit) {
+		super(poolSizePerAddress, NettyHttpPoolHandler::new, nThreads, timeout, timeoutUnit);
+	}
+	
+	@Override
+	public Future<Channel> acquireChannel(InetSocketAddress address) {
+		return super.acquireChannel(address).addListener(future -> {
+			if (future.isSuccess()) {
+				Channel channel = (Channel) future.get();
+				channel.pipeline().get(NettyHttpTimeoutHandler.class).enable();
+			}
+		});
+	}
+	
+	public Future<Void> releaseChannel(Channel channel) {
+		channel.pipeline().get(NettyHttpTimeoutHandler.class).disable();
+		return super.releaseChannel(channel);
 	}
 	
 	public Promise<Response> sendGet(URI uri) {
@@ -121,6 +140,7 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 		@Override
 		public void channelCreated(Channel channel) throws Exception {
 			channel.pipeline()
+				.addLast(new NettyHttpTimeoutHandler(client))
 				.addLast(new HttpClientCodec())
 				.addLast(new SimpleChannelInboundHandler<HttpObject>() {
 					@Override
@@ -146,13 +166,52 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 					public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
 				            throws Exception {
 						Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).getAndSet(null);
-						client.releaseChannel(channel);
+		    			ctx.close().addListener(f -> {
+		    				client.releaseChannel(ctx.channel());
+		    			});
 						promise.tryFailure(cause);
 				    }
 				});
 		}
 		
 
+	}
+	
+	public static class NettyHttpTimeoutHandler extends ChannelDuplexHandler {
+		
+		private NettyPooledClient<Response> client;
+		
+		private ScheduledFuture<?> future;
+		
+		private ChannelHandlerContext context;
+		
+		public NettyHttpTimeoutHandler(NettyPooledClient<Response> client) {
+			this.client = client;
+		}
+		
+	    @Override
+	    public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+	    	context = ctx;
+	    }
+	    
+	    public void enable() {
+	    	if (client.timeout <= 0) {
+	    		return;
+	    	}
+    		future = context.executor().schedule(() -> {
+    			String message = String.format("channel%s is timeout and will be closed", context.channel());
+    			context.fireExceptionCaught(new TimeoutException(message));
+    		}, client.timeout, client.timeoutUnit);
+	    }
+	    
+	    public void disable() {
+	    	if (future == null) {
+	    		return;
+	    	}
+	    	future.cancel(true);
+	    	future = null;
+	    }
+		
 	}
 
 	

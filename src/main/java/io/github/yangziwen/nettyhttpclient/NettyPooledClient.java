@@ -2,6 +2,7 @@ package io.github.yangziwen.nettyhttpclient;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -29,11 +30,17 @@ public class NettyPooledClient<R> implements AutoCloseable {
 
 	protected ConcurrentHashMap<Channel, InetSocketAddress> channelAddressMapping = new ConcurrentHashMap<>();
 	
+	protected long timeout;
+	
+	protected TimeUnit timeoutUnit;
+	
 	public NettyPooledClient(int poolSizePerAddress, ChannelPoolHandlerFactory<R> handlerFactory) {
-		this(poolSizePerAddress, handlerFactory, 0);
+		this(poolSizePerAddress, handlerFactory, 0, 0, TimeUnit.SECONDS);
 	}
 	
-	public NettyPooledClient(int poolSizePerAddress, ChannelPoolHandlerFactory<R> handlerFactory, int nThreads) {
+	public NettyPooledClient(int poolSizePerAddress, ChannelPoolHandlerFactory<R> handlerFactory, int nThreads, long timeout, TimeUnit timeoutUnit) {
+		this.timeout = timeout;
+		this.timeoutUnit = timeoutUnit;
 		bootstrap.channel(NioSocketChannel.class)
 			.group(new NioEventLoopGroup(nThreads))
 			.option(ChannelOption.TCP_NODELAY, true)
@@ -91,6 +98,8 @@ public class NettyPooledClient<R> implements AutoCloseable {
 	@Override
 	public void close() throws Exception {
 		bootstrap.config().group().shutdownGracefully().sync();
+		releasedCounterMap.clear();
+		channelAddressMapping.clear();
 	}
 	
 	public int getTotalPoolCnt() {
