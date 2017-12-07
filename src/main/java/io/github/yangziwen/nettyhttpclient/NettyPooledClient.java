@@ -56,7 +56,7 @@ public class NettyPooledClient<R> implements AutoCloseable {
 	}
 	
 	public Future<Channel> acquireChannel(InetSocketAddress address) {
-		Promise<Channel> promise = bootstrap.config().group().next().newPromise();
+		Promise<Channel> promise = newPromise();
 		channelPoolMap.get(address).acquire().addListener(future -> {
 			if (future.isSuccess()) {
 				Channel channel = (Channel) future.get();
@@ -95,6 +95,10 @@ public class NettyPooledClient<R> implements AutoCloseable {
 		releasedCounterMap.get(address).decrementAndGet();
 	}
 	
+	protected <T> Promise<T> newPromise() {
+		return bootstrap.config().group().next().newPromise();
+	}
+
 	@Override
 	public void close() throws Exception {
 		bootstrap.config().group().shutdownGracefully().sync();

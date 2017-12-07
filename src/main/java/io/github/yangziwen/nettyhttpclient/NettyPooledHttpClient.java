@@ -33,7 +33,6 @@ import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
 import io.netty.util.AttributeKey;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.concurrent.ScheduledFuture;
 
@@ -61,6 +60,7 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 		});
 	}
 	
+	@Override
 	public Future<Void> releaseChannel(Channel channel) {
 		channel.pipeline().get(NettyHttpTimeoutHandler.class).disable();
 		return super.releaseChannel(channel);
@@ -72,50 +72,42 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 
 	public Promise<Response> sendGet(URI uri, Map<String, Object> params) {
 		InetSocketAddress address = new InetSocketAddress(uri.getHost(), uri.getPort());
-		Promise<Response> promise = bootstrap.config().group().next().newPromise();
-		Future<Channel> future = acquireChannel(address);
-		future.addListener(new FutureListener<Channel>() {
-			@Override
-			public void operationComplete(Future<Channel> future) throws Exception {
-				if (!future.isSuccess()) {
-					logger.error("failed to acquire client for uri[{}]", uri);
-					promise.tryFailure(future.cause());
-					return;
-				}
-				Channel channel = future.get();
-				channel.attr(RESPONSE_PROMISE_KEY).set(promise);
-				QueryStringEncoder encoder = new QueryStringEncoder(String.valueOf(uri));
-				for (Entry<String, Object> entry : params.entrySet()) {
-					encoder.addParam(entry.getKey(), String.valueOf(entry.getValue()));
-				}
-				HttpRequest request = createHttpRequest(new URI(encoder.toString()), HttpMethod.GET);
-				channel.writeAndFlush(request);
+		Promise<Response> promise = newPromise();
+		acquireChannel(address).addListener(future -> {
+			if (!future.isSuccess()) {
+				logger.error("failed to acquire client for uri[{}]", uri);
+				promise.tryFailure(future.cause());
+				return;
 			}
+			Channel channel = (Channel) future.get();
+			channel.attr(RESPONSE_PROMISE_KEY).set(promise);
+			QueryStringEncoder encoder = new QueryStringEncoder(String.valueOf(uri));
+			for (Entry<String, Object> entry : params.entrySet()) {
+				encoder.addParam(entry.getKey(), String.valueOf(entry.getValue()));
+			}
+			HttpRequest request = createHttpRequest(new URI(encoder.toString()), HttpMethod.GET);
+			channel.writeAndFlush(request);
 		});
 		return promise;
 	}
 	
 	public Promise<Response> sendPost(URI uri, Map<String, Object> params) {
 		InetSocketAddress address = new InetSocketAddress(uri.getHost(), uri.getPort());
-		Promise<Response> promise = bootstrap.config().group().next().newPromise();
-		Future<Channel> future = acquireChannel(address);
-		future.addListener(new FutureListener<Channel>() {
-			@Override
-			public void operationComplete(Future<Channel> future) throws Exception {
-				if (!future.isSuccess()) {
-					logger.error("failed to acquire client for uri[{}]", uri);
-					promise.tryFailure(future.cause());
-					return;
-				}
-				Channel channel = future.get();
-				channel.attr(RESPONSE_PROMISE_KEY).set(promise);;
-				HttpRequest request = createHttpRequest(uri, HttpMethod.POST);
-				HttpPostRequestEncoder encoder = new HttpPostRequestEncoder(request, false);
-				for (Entry<String, Object> entry : params.entrySet()) {
-					encoder.addBodyAttribute(entry.getKey(), String.valueOf(entry.getValue()));
-				}
-				channel.writeAndFlush(encoder.finalizeRequest());
+		Promise<Response> promise = newPromise();
+		acquireChannel(address).addListener(future -> {
+			if (!future.isSuccess()) {
+				logger.error("failed to acquire client for uri[{}]", uri);
+				promise.tryFailure(future.cause());
+				return;
 			}
+			Channel channel = (Channel) future.get();
+			channel.attr(RESPONSE_PROMISE_KEY).set(promise);;
+			HttpRequest request = createHttpRequest(uri, HttpMethod.POST);
+			HttpPostRequestEncoder encoder = new HttpPostRequestEncoder(request, false);
+			for (Entry<String, Object> entry : params.entrySet()) {
+				encoder.addBodyAttribute(entry.getKey(), String.valueOf(entry.getValue()));
+			}
+			channel.writeAndFlush(encoder.finalizeRequest());
 		});
 		return promise;
 	}
