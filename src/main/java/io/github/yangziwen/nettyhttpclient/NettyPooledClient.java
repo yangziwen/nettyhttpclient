@@ -19,25 +19,25 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 
 public class NettyPooledClient<R> implements AutoCloseable {
-	
+
 	protected static final Logger logger = LoggerFactory.getLogger(NettyPooledClient.class);
-	
+
 	protected Bootstrap bootstrap = new Bootstrap();
-	
+
 	protected AbstractChannelPoolMap<InetSocketAddress, FixedChannelPool> channelPoolMap;
-	
+
 	protected ConcurrentHashMap<InetSocketAddress, AtomicInteger> releasedCounterMap = new ConcurrentHashMap<>();
 
 	protected ConcurrentHashMap<Channel, InetSocketAddress> channelAddressMapping = new ConcurrentHashMap<>();
-	
+
 	protected long timeout;
-	
+
 	protected TimeUnit timeoutUnit;
-	
+
 	public NettyPooledClient(int poolSizePerAddress, ChannelPoolHandlerFactory<R> handlerFactory) {
 		this(poolSizePerAddress, handlerFactory, 0, 0, TimeUnit.SECONDS);
 	}
-	
+
 	public NettyPooledClient(int poolSizePerAddress, ChannelPoolHandlerFactory<R> handlerFactory, int nThreads, long timeout, TimeUnit timeoutUnit) {
 		this.timeout = timeout;
 		this.timeoutUnit = timeoutUnit;
@@ -48,13 +48,13 @@ public class NettyPooledClient<R> implements AutoCloseable {
 		channelPoolMap = new AbstractChannelPoolMap<InetSocketAddress, FixedChannelPool>() {
 			@Override
 			protected FixedChannelPool newPool(InetSocketAddress key) {
-				return new FixedChannelPool(bootstrap.remoteAddress(key), 
-						handlerFactory.createHandler(NettyPooledClient.this), 
+				return new FixedChannelPool(bootstrap.remoteAddress(key),
+						handlerFactory.createHandler(NettyPooledClient.this),
 						poolSizePerAddress);
 			}
 		};
 	}
-	
+
 	public Future<Channel> acquireChannel(InetSocketAddress address) {
 		Promise<Channel> promise = newPromise();
 		channelPoolMap.get(address).acquire().addListener(future -> {
@@ -66,12 +66,12 @@ public class NettyPooledClient<R> implements AutoCloseable {
 				logger.debug("channel[{}] is acquired", channel.id());
 			} else {
 				promise.tryFailure(future.cause());
-				logger.error("failed to acquired channel due to {}", future.cause());
+				logger.error("failed to acquired channel due to ", future.cause());
 			}
 		});
 		return promise;
 	}
-	
+
 	public Future<Void> releaseChannel(Channel channel) {
 		InetSocketAddress address = channelAddressMapping.remove(channel);
 		return channelPoolMap.get(address).release(channel)
@@ -80,21 +80,21 @@ public class NettyPooledClient<R> implements AutoCloseable {
 					logger.debug("channel[{}] is released", channel.id());
 				});
 	}
-	
+
 	private void increaseReleaseCount(InetSocketAddress address) {
 		if (!releasedCounterMap.containsKey(address)) {
 			releasedCounterMap.putIfAbsent(address, new AtomicInteger());
 		}
 		releasedCounterMap.get(address).incrementAndGet();
 	}
-	
+
 	private void decreaseReleaseCount(InetSocketAddress address) {
 		if (!releasedCounterMap.containsKey(address)) {
 			return;
 		}
 		releasedCounterMap.get(address).decrementAndGet();
 	}
-	
+
 	protected <T> Promise<T> newPromise() {
 		return bootstrap.config().group().next().newPromise();
 	}
@@ -105,16 +105,16 @@ public class NettyPooledClient<R> implements AutoCloseable {
 		releasedCounterMap.clear();
 		channelAddressMapping.clear();
 	}
-	
+
 	public int getTotalPoolCnt() {
 		return channelPoolMap.size();
 	}
-	
+
 	public int getReleasedChannelCount(InetSocketAddress address) {
 		if (!releasedCounterMap.containsKey(address)) {
 			return 0;
 		}
 		return releasedCounterMap.get(address).get();
 	}
-	
+
 }

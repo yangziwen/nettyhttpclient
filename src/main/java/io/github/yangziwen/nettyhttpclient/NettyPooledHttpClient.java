@@ -18,16 +18,15 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.pool.AbstractChannelPoolHandler;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.FullHttpMessage;
+import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpClientCodec;
-import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObject;
+import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpRequest;
-import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.QueryStringEncoder;
 import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
 import io.netty.util.AttributeKey;
@@ -37,11 +36,9 @@ import io.netty.util.concurrent.Promise;
 import io.netty.util.concurrent.ScheduledFuture;
 
 public class NettyPooledHttpClient extends NettyPooledClient<Response> {
-	
+
 	private static final AttributeKey<Promise<Response>> RESPONSE_PROMISE_KEY = AttributeKey.valueOf("response_promise");
-	
-	private static final AttributeKey<Response> HTTP_RESPONSE_KEY = AttributeKey.valueOf("http_response");
-	
+
 	public NettyPooledHttpClient(int poolSizePerAddress) {
 		this(poolSizePerAddress, 0, 0, TimeUnit.SECONDS);
 	}
@@ -49,7 +46,7 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 	public NettyPooledHttpClient(int poolSizePerAddress, int nThreads, long timeout, TimeUnit timeoutUnit) {
 		super(poolSizePerAddress, NettyHttpPoolHandler::new, nThreads, timeout, timeoutUnit);
 	}
-	
+
 	@Override
 	public Future<Channel> acquireChannel(InetSocketAddress address) {
 		return super.acquireChannel(address).addListener(future -> {
@@ -59,13 +56,13 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 			}
 		});
 	}
-	
+
 	@Override
 	public Future<Void> releaseChannel(Channel channel) {
 		channel.pipeline().get(NettyHttpTimeoutHandler.class).disable();
 		return super.releaseChannel(channel);
 	}
-	
+
 	public Promise<Response> sendGet(URI uri) {
 		return sendGet(uri, Collections.emptyMap());
 	}
@@ -90,7 +87,7 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 		});
 		return promise;
 	}
-	
+
 	public Promise<Response> sendPost(URI uri, Map<String, Object> params) {
 		InetSocketAddress address = new InetSocketAddress(uri.getHost(), uri.getPort());
 		Promise<Response> promise = newPromise();
@@ -111,7 +108,7 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 		});
 		return promise;
 	}
-	
+
 	private HttpRequest createHttpRequest(URI uri, HttpMethod method) {
 		HttpRequest request = new DefaultFullHttpRequest(
                 HttpVersion.HTTP_1_1, method, uri.getRawPath());
@@ -120,99 +117,89 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 				.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
 		return request;
 	}
-	
+
 	public static class NettyHttpPoolHandler extends AbstractChannelPoolHandler {
-		
+
 		private NettyPooledClient<Response> client;
-		
+
 		public NettyHttpPoolHandler(NettyPooledClient<Response> client) {
 			this.client = client;
 		}
-		
+
 		@Override
 		public void channelCreated(Channel channel) throws Exception {
 			channel.pipeline()
 				.addLast(new NettyHttpTimeoutHandler(client))
 				.addLast(new HttpClientCodec())
-				.addLast(new SimpleChannelInboundHandler<HttpObject>() {
+				.addLast(new HttpObjectAggregator(65535))
+				.addLast(new SimpleChannelInboundHandler<FullHttpMessage>() {
 					@Override
-					protected void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
-						if (msg instanceof HttpResponse) {
-							HttpResponse resp = (HttpResponse) msg;
-							Response response = new Response(resp.status().code());
-							channel.attr(HTTP_RESPONSE_KEY).set(response);
-							return;
-						}
-						if (msg instanceof HttpContent) {
-							HttpContent content = (HttpContent) msg;
-							Response response = channel.attr(HTTP_RESPONSE_KEY).get();
-							response.appendContent(content.content().toString(CharsetUtil.UTF_8));
-						}
-						if (msg instanceof LastHttpContent) {
-							Response response = channel.attr(HTTP_RESPONSE_KEY).get();
-							Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).getAndSet(null);
-							client.releaseChannel(channel);
-							promise.trySuccess(response);
-						}
+					protected void channelRead0(ChannelHandlerContext ctx, FullHttpMessage msg) throws Exception {
+					    if (msg instanceof FullHttpResponse) {
+					        FullHttpResponse resp = (FullHttpResponse) msg;
+					        Response response = new Response(resp.status().code());
+					        response.appendContent(msg.content().toString(CharsetUtil.UTF_8));
+					        Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).getAndSet(null);
+					        client.releaseChannel(channel);
+					        promise.trySuccess(response);
+					    }
 					}
+					@Override
 					public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
-				            throws Exception {
+							throws Exception {
 						Promise<Response> promise = channel.attr(RESPONSE_PROMISE_KEY).getAndSet(null);
-		    			ctx.close().addListener(f -> {
-		    				client.releaseChannel(ctx.channel());
-		    			});
+						ctx.close().addListener(f -> client.releaseChannel(ctx.channel()));
 						promise.tryFailure(cause);
 				    }
 				});
 		}
-		
+
 
 	}
-	
+
 	public static class NettyHttpTimeoutHandler extends ChannelDuplexHandler {
-		
+
 		private NettyPooledClient<Response> client;
-		
+
 		private ScheduledFuture<?> future;
-		
+
 		private ChannelHandlerContext context;
-		
+
 		public NettyHttpTimeoutHandler(NettyPooledClient<Response> client) {
 			this.client = client;
 		}
-		
-	    @Override
-	    public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
-	    	context = ctx;
+
+		@Override
+		public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+			context = ctx;
+		}
+		public void enable() {
+			if (client.timeout <= 0) {
+				return;
+			}
+			future = context.executor().schedule(() -> {
+				String message = String.format("channel%s is timeout and will be closed", context.channel());
+				context.fireExceptionCaught(new TimeoutException(message));
+			}, client.timeout, client.timeoutUnit);
+		}
+
+		public void disable() {
+			if (future == null) {
+				return;
+			}
+			future.cancel(true);
+			future = null;
 	    }
-	    
-	    public void enable() {
-	    	if (client.timeout <= 0) {
-	    		return;
-	    	}
-    		future = context.executor().schedule(() -> {
-    			String message = String.format("channel%s is timeout and will be closed", context.channel());
-    			context.fireExceptionCaught(new TimeoutException(message));
-    		}, client.timeout, client.timeoutUnit);
-	    }
-	    
-	    public void disable() {
-	    	if (future == null) {
-	    		return;
-	    	}
-	    	future.cancel(true);
-	    	future = null;
-	    }
-		
+
 	}
 
-	
+
 	public static class Response {
-		
+
 		private int code;
-		
+
 		private StringBuilder contentBuffer = new StringBuilder();
-		
+
 		public Response(int code) {
 			this.code = code;
 		}
@@ -233,10 +220,11 @@ public class NettyPooledHttpClient extends NettyPooledClient<Response> {
 			contentBuffer.append(content);
 			return this;
 		}
-		
+
+		@Override
 		public String toString() {
 			return ToStringBuilder.reflectionToString(this, ToStringStyle.SIMPLE_STYLE);
 		}
-		
+
 	}
 }
