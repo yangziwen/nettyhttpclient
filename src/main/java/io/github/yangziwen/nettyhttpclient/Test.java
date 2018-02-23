@@ -1,46 +1,43 @@
 package io.github.yangziwen.nettyhttpclient;
 
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import io.github.yangziwen.nettyhttpclient.NettyPooledHttpClient.Response;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.FutureListener;
 
 public class Test {
-	
+
 	public static void main(String[] args) throws Exception {
-		NettyPooledHttpClient client = new NettyPooledHttpClient(20, 5, 1, TimeUnit.SECONDS);
-		URI uri = new URI("http://localhost:8045/job/codeline/metrics");
-		AtomicInteger cnt = new AtomicInteger();
+		NettyPooledHttpClient client = new NettyPooledHttpClient(500, 3, 5, TimeUnit.SECONDS);
+		String url = "http://localhost:8030/test";
+
+		sendRequests(client, url, 6000, response -> {}, error -> {});
+		System.out.println("warm up finished");
+
+		int n = 10000;
 		long t = System.currentTimeMillis();
-		int n = 500;
-		CountDownLatch latch = new CountDownLatch(n);
-		for (int i = 0; i < n; i++) {
-			final int index = i;
-			client.sendGet(uri).addListener(new FutureListener<Response>() {
-				@Override
-				public void operationComplete(Future<Response> future) throws Exception {
-					if (future.isSuccess()) {
-						System.out.println(index + ":" + future.get());
-					} else {
-						System.out.println(index + ":" + future.cause());
-					}
-					cnt.incrementAndGet();
-					latch.countDown();
+		sendRequests(client, url, n, response -> {}, System.err::println);
+		System.out.println("cost " + (System.currentTimeMillis() - t) + "ms to send " + n + " requests");
+		client.close();
+	}
+
+	private static void sendRequests(NettyPooledHttpClient client, String url, int times,
+			Consumer<Response> successCallback, Consumer<Throwable> errorCallback) throws Exception {
+		URI uri = new URI(url);
+		CountDownLatch latch = new CountDownLatch(times);
+		for (int i = 0; i < times; i++) {
+			client.sendGet(uri).addListener(future -> {
+				if (future.isSuccess()) {
+					successCallback.accept((Response) future.get());
+				} else {
+					errorCallback.accept(future.cause());
 				}
+				latch.countDown();
 			});
 		}
-		latch.await(30, TimeUnit.SECONDS);
-		System.out.println(System.currentTimeMillis() - t);
-		System.out.println(cnt);
-		Thread.sleep(3000);
-		System.out.println(client.getReleasedChannelCount(new InetSocketAddress("localhost", 8045)));
-		client.close();
-		
+		latch.await();
 	}
 
 }
